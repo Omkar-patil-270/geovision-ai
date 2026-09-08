@@ -1,0 +1,26 @@
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.pkl
+*.h5
+*.pt
+venv/
+.venv/
+env/
+
+# Ignore large data files but keep worldcities.csv
+data/*.json
+!data/worldcities.csv
+
+# Secrets & Service Accounts
+service_account*.json
+credentials.json
+
+.DS_Store
+Thumbs.db

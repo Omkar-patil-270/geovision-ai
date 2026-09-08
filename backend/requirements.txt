@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+httpx
+pandas
+numpy
+scikit-learn
+pydantic
+python-dotenv
+groq
+statsmodels
+reportlab
+earthengine-api
+torch
+torchvision
+timm
+torchgeo
+pillow

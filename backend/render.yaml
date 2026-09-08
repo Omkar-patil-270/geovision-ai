@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: geovisionai-backend
+    env: python
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENAQ_API_KEY
+        sync: false
+      - key: EE_PROJECT
+        sync: false
+      - key: EE_SERVICE_ACCOUNT_EMAIL
+        sync: false
+      - key: EE_SERVICE_ACCOUNT_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
