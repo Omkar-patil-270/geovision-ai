@@ -58,8 +58,45 @@ def _get_nearest_city_fallback(lat: float, lon: float):
             "population_supported": True,
             "resolved_from": city,
         }
+def _search_worldcities_local(q: str, limit: int = 5):
+    global _local_cities
+    if _local_cities is None:
+        try:
+            _local_cities = pd.read_csv(_CITIES_CSV)
+        except Exception:
+            _local_cities = pd.DataFrame()
+    if _local_cities.empty:
+        return []
+    try:
+        df = _local_cities
+        q_lower = q.lower().strip()
+        matches = df[df["city"].astype(str).str.lower().str.contains(q_lower, na=False) |
+                     df["city_ascii"].astype(str).str.lower().str.contains(q_lower, na=False)].copy()
+        if matches.empty:
+            return []
+        matches = matches.sort_values("population", ascending=False).head(limit)
+        results = []
+        for _, row in matches.iterrows():
+            city = row.get("city", "")
+            admin = row.get("admin_name", "")
+            country = row.get("country", "")
+            code = str(row.get("iso2", "")).upper()
+            name = f"{city}, {admin}, {country}" if admin and admin != city else f"{city}, {country}"
+            results.append({
+                "name": name,
+                "lat": float(row["lat"]),
+                "lon": float(row["lng"]),
+                "level": 5,
+                "level_label": "District",
+                "boundary_query": f"{city}, {country}",
+                "country_code": code,
+                "population_supported": True,
+                "resolved_from": city,
+            })
+        return results
     except Exception:
-        return None
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Administrative level model
@@ -326,7 +363,7 @@ async def search_location(q: str):
             async with httpx.AsyncClient() as client:
                 results = await _nominatim_search(client, q_clean, limit=10)
                 if not results:
-                    return []
+                    return _search_worldcities_local(q_clean, limit=8)
 
                 results.sort(key=score_result, reverse=True)
 
@@ -367,10 +404,10 @@ async def search_location(q: str):
                         "resolved_from": None,
                     })
 
-                return output[:8]
+                return output[:8] if output else _search_worldcities_local(q_clean, limit=8)
         except Exception as e:
             print("search_location error:", repr(e))
-            return []
+            return _search_worldcities_local(q_clean, limit=8)
 
     return await cache_utils.get_or_set(key, SEARCH_CACHE_TTL, _do_search)
 

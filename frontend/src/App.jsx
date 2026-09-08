@@ -534,10 +534,12 @@ function App() {
     try {
       const cacheKey = `search:${query.trim().toLowerCase()}`;
       let results = cacheGet(cacheKey);
-      if (!results) {
+      if (!results || (Array.isArray(results) && results.length === 0)) {
         const res = await axios.get(`${API_BASE}/api/location/search`, { params: { q: query }, timeout: 10000 });
         results = res.data;
-        cacheSet(cacheKey, results, TTL.SEARCH);
+        if (Array.isArray(results) && results.length > 0) {
+          cacheSet(cacheKey, results, TTL.SEARCH);
+        }
       }
       if (results.length === 0) {
         setErrorMsg("Location not found. Try a different city, district, or landmark name.");

@@ -56,7 +56,7 @@ async def get_or_set(key: str, ttl_seconds: int, factory: Callable[[], Awaitable
         if cached is not None:
             return cached
         value = await factory()
-        if value is not None:
+        if value is not None and value != []:
             set(key, value, ttl_seconds)
         return value
 
