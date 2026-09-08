@@ -6,9 +6,9 @@ import { cacheGet, cacheSet, locationCacheKey, TTL } from "./cache";
 import EChartForecast from "./components/EChartForecast";
 import CompareChart from "./components/CompareChart";
 
-const API_BASE = (import.meta.env.VITE_API_URL && !import.meta.env.VITE_API_URL.includes("xxxx"))
-  ? import.meta.env.VITE_API_URL
-  : (import.meta.env.PROD ? "https://geovision-ai-ix4n.onrender.com" : "http://localhost:8000");
+const API_BASE = (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))
+  ? "http://localhost:8000"
+  : "https://geovision-ai-ix4n.onrender.com";
 const MAX_PHOTOS = 12;
 
 const displayImageUrl = (url) => {
