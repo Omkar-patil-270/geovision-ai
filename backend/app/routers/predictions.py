@@ -448,17 +448,17 @@ async def get_weather_7day(lat, lon):
         return []
 
 async def get_weather_global(lat, lon):
-    """Real monthly series over 15 years so SARIMA has enough real history."""
+    """Real monthly series over recent years so SARIMA has enough real history quickly."""
     key = cache_utils.make_key("weather", round(lat, 3), round(lon, 3))
 
     async def _fetch():
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=5) as client:
                 res = await client.get(
                     "https://archive-api.open-meteo.com/v1/archive",
                     params={
                         "latitude": lat, "longitude": lon,
-                        "start_date": "2010-01-01", "end_date": "2024-12-31",
+                        "start_date": "2019-01-01", "end_date": "2024-12-31",
                         "daily": "temperature_2m_mean", "timezone": "auto",
                     },
                 )
@@ -517,17 +517,20 @@ async def _get_night_light_year(lat, lon, year):
             return {"year": year, "value": round(value, 2)} if value is not None else None
         except Exception:
             return None
-    return await asyncio.to_thread(_sync_call)
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_sync_call), timeout=2.5)
+    except Exception:
+        return None
 
 
 async def get_migration_proxy(lat, lon):
-    """Real 5-point yearly series (2014,2016,2018,2020,2022), now cached."""
+    """Real 3-point yearly series (2018,2020,2022), fast and cached."""
     key = cache_utils.make_key("migration", round(lat, 3), round(lon, 3))
 
     async def _fetch():
         if not _EE_READY:
             return None
-        years = [2014, 2016, 2018, 2020, 2022]
+        years = [2018, 2020, 2022]
         results = await asyncio.gather(*[_get_night_light_year(lat, lon, y) for y in years])
         years_data = [r for r in results if r is not None]
         years_data.sort(key=lambda r: r["year"])
@@ -565,10 +568,10 @@ async def get_predictions(lat: float, lon: float, place_name: str = None, level:
                 get_population_predictions(lat, lon, level=level, country_code=country_code, boundary_query=place_name),
                 get_weather_7day(lat, lon),
             ),
-            # First Earth Engine/WorldPop lookups may be slow and uncached.
-            timeout=90,
+            # Fast, resilient 8-second timeout so Render free tier never hangs or drops gateway
+            timeout=8.0,
         )
-    except asyncio.TimeoutError:
+    except Exception:
         aqi_result = (None, [], None)
         weather_result = (None, [], [], None)
         migration_result = (None, [], [], None)

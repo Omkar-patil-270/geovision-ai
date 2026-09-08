@@ -8,11 +8,58 @@ router = APIRouter()
 
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
-HEADERS = {"User-Agent": "GeoVisionAI/1.0"}
+PHOTON_SEARCH_URL = "https://photon.komoot.io/api"
+PHOTON_REVERSE_URL = "https://photon.komoot.io/reverse"
+HEADERS = {
+    "User-Agent": "GeoVisionAI-Platform/2.0 (https://geovisionai.org; contact@geovisionai.org)",
+    "Accept": "application/json",
+}
 
 SEARCH_CACHE_TTL = 60 * 60 * 6       # 6h — place names don't move
 BOUNDARY_CACHE_TTL = 60 * 60 * 24     # 24h — boundary polygons are static
 NEARBY_CACHE_TTL = 60 * 60 * 6
+
+import os
+import pandas as pd
+
+_CITIES_CSV = os.path.join(os.path.dirname(__file__), "..", "..", "data", "worldcities.csv")
+_local_cities = None
+
+def _get_nearest_city_fallback(lat: float, lon: float):
+    global _local_cities
+    if _local_cities is None:
+        try:
+            _local_cities = pd.read_csv(_CITIES_CSV)
+        except Exception:
+            _local_cities = pd.DataFrame()
+    if _local_cities.empty:
+        return None
+    try:
+        df = _local_cities.copy()
+        box = df[(df["lat"].between(lat - 2.5, lat + 2.5)) & (df["lng"].between(lon - 2.5, lon + 2.5))].copy()
+        if box.empty:
+            box = df.copy()
+        box["dist_sq"] = (box["lat"] - lat)**2 + (box["lng"] - lon)**2
+        top = box.sort_values("dist_sq").iloc[0]
+        city = top.get("city", "Selected Location")
+        admin = top.get("admin_name", "")
+        country = top.get("country", "")
+        code = str(top.get("iso2", "")).upper()
+        clean = f"{city}, {admin}, {country}" if admin and admin != city else f"{city}, {country}"
+        return {
+            "name": clean,
+            "lat": float(top["lat"]),
+            "lon": float(top["lng"]),
+            "boundary_query": f"{city}, {country}",
+            "level": 5,
+            "level_label": "District",
+            "country_code": code,
+            "display_name": clean,
+            "population_supported": True,
+            "resolved_from": city,
+        }
+    except Exception:
+        return None
 
 # ---------------------------------------------------------------------------
 # Administrative level model
@@ -164,6 +211,35 @@ def _region_resolution(addr: dict):
     return None, None, None, country_code
 
 
+def _photon_to_nominatim(feature):
+    props = feature.get("properties", {})
+    coords = feature.get("geometry", {}).get("coordinates", [0, 0])
+    name = props.get("name", "")
+    city = props.get("city") or props.get("town") or props.get("village") or name
+    state = props.get("state")
+    country = props.get("country")
+    parts = [name]
+    if city and city != name: parts.append(city)
+    if state and state != name: parts.append(state)
+    if country: parts.append(country)
+    return {
+        "lat": str(coords[1]),
+        "lon": str(coords[0]),
+        "display_name": ", ".join(parts),
+        "class": "place",
+        "type": props.get("type", "city"),
+        "importance": 0.85,
+        "address": {
+            "city": city,
+            "state": state,
+            "country": country,
+            "country_code": (props.get("countrycode") or "").lower(),
+            "county": props.get("district") or props.get("county"),
+            "state_district": props.get("district"),
+        }
+    }
+
+
 async def _nominatim_search(client: httpx.AsyncClient, q: str, limit: int = 5, extra: dict = None):
     params = {
         "q": q, "format": "json", "addressdetails": 1, "extratags": 1,
@@ -171,13 +247,25 @@ async def _nominatim_search(client: httpx.AsyncClient, q: str, limit: int = 5, e
     }
     if extra:
         params.update(extra)
-    res = await client.get(NOMINATIM_SEARCH_URL, params=params, headers=HEADERS, timeout=10)
-    if res.status_code != 200:
-        return []
     try:
-        return res.json()
+        res = await client.get(NOMINATIM_SEARCH_URL, params=params, headers=HEADERS, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data:
+                return data
     except Exception:
-        return []
+        pass
+
+    # Reliable OpenStreetMap Photon Geocoding fallback
+    try:
+        p_res = await client.get(PHOTON_SEARCH_URL, params={"q": q, "limit": limit}, headers=HEADERS, timeout=5)
+        if p_res.status_code == 200:
+            features = p_res.json().get("features", [])
+            if features:
+                return [_photon_to_nominatim(f) for f in features]
+    except Exception:
+        pass
+    return []
 
 
 async def _resolve_settlement(client: httpx.AsyncClient, item: dict):
@@ -405,17 +493,25 @@ async def reverse_geocode(lat: float, lon: float):
             "zoom": 14,
             "accept-language": "en",
         }
+        data = None
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=4) as client:
                 res = await client.get(NOMINATIM_REVERSE_URL, params=params, headers=HEADERS)
-                if res.status_code != 200:
-                    return None
-                data = res.json()
+                if res.status_code == 200:
+                    data = res.json()
+                else:
+                    p_res = await client.get(PHOTON_REVERSE_URL, params={"lat": lat, "lon": lon}, headers=HEADERS, timeout=4)
+                    if p_res.status_code == 200:
+                        feats = p_res.json().get("features", [])
+                        if feats:
+                            data = _photon_to_nominatim(feats[0])
         except Exception as e:
-            print("reverse_geocode error:", repr(e))
-            return None
+            data = None
 
         if not data or not isinstance(data, dict) or "address" not in data:
+            fallback = _get_nearest_city_fallback(lat, lon)
+            if fallback:
+                return fallback
             return None
 
         addr = data.get("address", {})
@@ -441,6 +537,9 @@ async def reverse_geocode(lat: float, lon: float):
 
     res = await cache_utils.get_or_set(key, SEARCH_CACHE_TTL, _do_reverse)
     if not res:
+        fallback = _get_nearest_city_fallback(lat, lon)
+        if fallback:
+            return fallback
         return {
             "name": f"Coordinates ({lat:.3f}°, {lon:.3f}°)",
             "lat": lat,
