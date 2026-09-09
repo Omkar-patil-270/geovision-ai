@@ -20,7 +20,7 @@ _locks: dict[str, asyncio.Lock] = {}
 
 def make_key(*parts: Any) -> str:
     """Builds a stable cache key out of any JSON-able parts."""
-    raw = json.dumps(parts, sort_keys=True, default=str)
+    raw = "v3_" + json.dumps(parts, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

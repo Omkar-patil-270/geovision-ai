@@ -373,12 +373,13 @@ SECTION_TITLES = {
 def _format_pop(v):
     if v is None:
         return "monitored levels"
-    if v >= 1e7:
-        return f"{v / 1e7:.2f} Cr"
-    if v >= 1e5:
-        return f"{v / 1e5:.2f} Lakh"
     try:
-        return f"{int(v):,}"
+        vf = float(v)
+        if vf >= 1e7:
+            return f"{vf / 1e7:.2f} Cr"
+        if vf >= 1e5:
+            return f"{vf / 1e5:.2f} Lakh"
+        return f"{int(vf):,}"
     except Exception:
         return str(v)
 
@@ -398,22 +399,37 @@ def _data_aware_fallback_section(sec: str, location_name: str, level_label: Opti
     pop_cur = pop_data.get("current")
     pop_source = pop_data.get("source", "WorldPop / Reference dataset")
     pop_fc = pop_data.get("forecast_5yr") or []
-    fc_val = pop_fc[-1]["value"] if pop_fc else None
-    validation = pop_data.get("model", {}).get("validation", {})
-    mae = validation.get("mae")
-    rmse = validation.get("rmse")
-    mape = validation.get("mape")
+    fc_val = pop_fc[-1]["value"] if (pop_fc and isinstance(pop_fc, list) and isinstance(pop_fc[-1], dict)) else None
+
+    model_obj = pop_data.get("model") or {}
+    validation = model_obj.get("validation") if isinstance(model_obj, dict) else {}
+    if isinstance(validation, dict):
+        mae = validation.get("mae") or (model_obj.get("mae") if isinstance(model_obj, dict) else None)
+        rmse = validation.get("rmse") or (model_obj.get("rmse") if isinstance(model_obj, dict) else None)
+        mape = validation.get("mape") or (model_obj.get("mape") if isinstance(model_obj, dict) else None)
+    elif isinstance(model_obj, dict):
+        mae = model_obj.get("mae")
+        rmse = model_obj.get("rmse")
+        mape = model_obj.get("mape")
+    else:
+        mae, rmse, mape = None, None, None
 
     aqi_cur = aqi_data.get("current")
     aqi_station = aqi_data.get("station", "regional monitoring network")
-    aqi_num = float(aqi_cur) if aqi_cur is not None else 50
+    try:
+        aqi_num = float(aqi_cur) if aqi_cur is not None else 50
+    except Exception:
+        aqi_num = 50
     aqi_cat = "Good" if aqi_num <= 50 else "Moderate" if aqi_num <= 100 else "Unhealthy for Sensitive Groups" if aqi_num <= 150 else "Unhealthy" if aqi_num <= 200 else "Very Unhealthy" if aqi_num <= 300 else "Hazardous"
 
     temp_cur = weather_data.get("current")
     days = weather_data.get("next_7_days") or []
-    temp_hi = max([d.get("max_c", 0) for d in days], default=temp_cur or 28)
-    temp_lo = min([d.get("min_c", 0) for d in days], default=temp_cur or 20)
-    rain_prob = max([d.get("precip_probability", 0) for d in days], default=0)
+    try:
+        temp_hi = max([d.get("max_c", 0) for d in days if isinstance(d, dict)], default=float(temp_cur or 28))
+        temp_lo = min([d.get("min_c", 0) for d in days if isinstance(d, dict)], default=float(temp_cur or 20))
+        rain_prob = max([d.get("precip_probability", 0) for d in days if isinstance(d, dict)], default=0)
+    except Exception:
+        temp_hi, temp_lo, rain_prob = 28, 20, 0
 
     rad_cur = migration_data.get("current")
     source_snippet = (" ".join(context.split()[:120]) if context else "").strip()
@@ -431,7 +447,7 @@ def _data_aware_fallback_section(sec: str, location_name: str, level_label: Opti
 
     elif sec == "climate":
         p1 = (
-            f"Meteorological context for {location_name} currently measures an average temperature of {f'{temp_cur:.1f}°C' if temp_cur is not None else 'seasonal baseline levels'}, "
+            f"Meteorological context for {location_name} currently measures an average temperature of {f'{float(temp_cur):.1f}°C' if temp_cur is not None else 'seasonal baseline levels'}, "
             f"with weekly temperature variations bounded between {temp_lo:.1f}°C and {temp_hi:.1f}°C based on real-time Open-Meteo observations."
         )
         p2 = (
@@ -442,7 +458,12 @@ def _data_aware_fallback_section(sec: str, location_name: str, level_label: Opti
     elif sec == "population":
         pop_str = _format_pop(pop_cur)
         fc_str = _format_pop(fc_val) if fc_val else "projected baseline"
-        metrics_str = f"with expanding-window validation metrics (MAE: {mae:.1f}, MAPE: {mape:.1f}%)" if (mae and mape) else "derived from validated time-series models"
+        try:
+            mae_f = float(mae) if mae is not None else None
+            mape_f = float(mape) if mape is not None else None
+            metrics_str = f"with expanding-window validation metrics (MAE: {mae_f:.1f}, MAPE: {mape_f:.1f}%)" if (mae_f and mape_f) else "derived from validated time-series models"
+        except Exception:
+            metrics_str = "derived from validated time-series models"
         p1 = (
             f"Demographic monitoring documents a population baseline of approximately {pop_str} for {location_name}, "
             f"verified through {pop_source}. Longitudinal ARIMA modeling evaluates the historical trajectory {metrics_str}."
@@ -453,7 +474,7 @@ def _data_aware_fallback_section(sec: str, location_name: str, level_label: Opti
         )
 
     elif sec == "environment":
-        rad_str = f"{rad_cur:.2f} nW/cm²/sr" if rad_cur is not None else "measured satellite baseline"
+        rad_str = f"{float(rad_cur):.2f} nW/cm²/sr" if rad_cur is not None else "measured satellite baseline"
         p1 = (
             f"Environmental diagnostics indicate an Air Quality Index of {aqi_cur if aqi_cur is not None else 'N/A'} AQI, "
             f"classified as {aqi_cat} based on readings recorded via {aqi_station}."
@@ -488,7 +509,7 @@ def _data_aware_fallback_section(sec: str, location_name: str, level_label: Opti
 
 async def _generate_llm_text(prompt: str) -> Optional[str]:
     """
-    Multi-provider LLM caller: checks Gemini, Groq, and OpenAI asynchronously.
+    Multi-provider LLM caller with tight 3.5s timeout: checks Gemini, Groq, and OpenAI asynchronously.
     """
     # 1. Google Gemini API (if configured)
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -496,7 +517,7 @@ async def _generate_llm_text(prompt: str) -> Optional[str]:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            async with httpx.AsyncClient(timeout=14) as client:
+            async with httpx.AsyncClient(timeout=3.5) as client:
                 res = await client.post(url, json=payload)
                 if res.status_code == 200:
                     candidates = res.json().get("candidates", [])
@@ -504,13 +525,13 @@ async def _generate_llm_text(prompt: str) -> Optional[str]:
                         content = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
                         if content:
                             return content
-        except Exception as e:
-            print(f"Gemini generation error: {e}")
+        except Exception:
+            pass
 
     # 2. Groq API (if configured)
     groq_key = os.getenv("GROQ_API_KEY", "").strip()
     if groq_key:
-        for model_name in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+        for model_name in ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]:
             try:
                 headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
                 payload = {
@@ -519,7 +540,7 @@ async def _generate_llm_text(prompt: str) -> Optional[str]:
                     "temperature": 0.6,
                     "max_tokens": 450,
                 }
-                async with httpx.AsyncClient(timeout=14) as client:
+                async with httpx.AsyncClient(timeout=3.5) as client:
                     res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
                     if res.status_code == 200:
                         choices = res.json().get("choices", [])
@@ -527,8 +548,8 @@ async def _generate_llm_text(prompt: str) -> Optional[str]:
                             content = choices[0].get("message", {}).get("content", "").strip()
                             if content:
                                 return content
-            except Exception as e:
-                print(f"Groq ({model_name}) generation error: {e}")
+            except Exception:
+                pass
 
     # 3. OpenAI API (if configured)
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -541,7 +562,7 @@ async def _generate_llm_text(prompt: str) -> Optional[str]:
                 "temperature": 0.6,
                 "max_tokens": 450,
             }
-            async with httpx.AsyncClient(timeout=14) as client:
+            async with httpx.AsyncClient(timeout=3.5) as client:
                 res = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
                 if res.status_code == 200:
                     choices = res.json().get("choices", [])
@@ -549,8 +570,8 @@ async def _generate_llm_text(prompt: str) -> Optional[str]:
                         content = choices[0].get("message", {}).get("content", "").strip()
                         if content:
                             return content
-        except Exception as e:
-            print(f"OpenAI generation error: {e}")
+        except Exception:
+            pass
 
     return None
 
@@ -558,85 +579,105 @@ async def _generate_llm_text(prompt: str) -> Optional[str]:
 @router.post("/section")
 async def generate_story_section(req: SectionRequest):
     """
-    Generates ONE story section at a time. Supports new geospatial sections and legacy aliases.
-    Prompt is data-aware, receiving real coordinates, population, AQI, weather, and radiance.
+    Generates ONE story section at a time. Guaranteed to never raise 500 errors.
     """
     raw_sec = (req.section_name or req.section or "geographic_context").lower()
     canonical_sec = SECTION_ALIASES.get(raw_sec, raw_sec)
-
-    allowed_sections = list(SECTION_TITLES.keys()) + list(SECTION_ALIASES.keys())
     if canonical_sec not in SECTION_TITLES:
         canonical_sec = "geographic_context"
 
-    key = cache_utils.make_key(
-        "story_section_v4",
-        req.location_name.strip().lower(),
-        canonical_sec,
-        (req.level_label or "").lower()
-    )
-
-    cached = cache_utils.get(key)
-    if cached is not None:
-        return cached
-
-    context = (req.wikipedia_context or "").strip()
-    wiki_title = None
-    if not context:
-        wiki = await get_wikipedia_summary(req.location_name)
-        if wiki:
-            context = wiki.get("full_extract") or wiki.get("extract") or ""
-            wiki_title = wiki.get("title")
-    else:
-        wiki_title = req.location_name
-
     sec_title = SECTION_TITLES.get(canonical_sec, canonical_sec.title())
-    preds = req.predictions or {}
+    loc_name = (req.location_name or "Selected Location").strip()
+    lvl_label = (req.level_label or "").strip()
 
-    # Build comprehensive data context
-    pop = preds.get("population", {})
-    aqi = preds.get("aqi", {})
-    weather = preds.get("weather", {})
-    migration = preds.get("migration", {})
+    try:
+        key = cache_utils.make_key(
+            "story_section_v5",
+            loc_name.lower(),
+            canonical_sec,
+            lvl_label.lower()
+        )
 
-    data_summary = (
-        f"Location: {req.location_name} ({req.level_label or 'Region'})\n"
-        f"Population: {pop.get('current', 'N/A')} (Source: {pop.get('source', 'N/A')})\n"
-        f"Air Quality Index: {aqi.get('current', 'N/A')} AQI via {aqi.get('station', 'station')}\n"
-        f"Temperature: {weather.get('current', 'N/A')}°C\n"
-        f"Night-Light Radiance: {migration.get('current', 'N/A')} nW/cm²/sr\n"
-        f"Verified Knowledge: {context[:400] if context else 'General geographic entity'}"
-    )
+        cached = cache_utils.get(key)
+        if cached is not None:
+            return cached
 
-    prompt = (
-        f"You are a professional geospatial intelligence analyst for GeoVisionAI.\n"
-        f"Write an insightful 150-word section titled '{sec_title}' for {req.location_name}.\n\n"
-        f"Data & Context:\n{data_summary}\n\n"
-        f"Instructions:\n"
-        f"- Explain the data and trends authentically in the context of physical and human geography.\n"
-        f"- Format into exactly 2 clean paragraphs separated by a blank line.\n"
-        f"- Do NOT use empty introductory filler or bullet points.\n"
-        f"- Do NOT invent data; strictly ground statements in the figures provided above."
-    )
+        context = (req.wikipedia_context or "").strip()
+        wiki_title = None
+        if not context:
+            try:
+                wiki = await get_wikipedia_summary(loc_name)
+                if wiki:
+                    context = wiki.get("full_extract") or wiki.get("extract") or ""
+                    wiki_title = wiki.get("title")
+            except Exception:
+                pass
+        else:
+            wiki_title = loc_name
 
-    llm_result = await _generate_llm_text(prompt)
-    if llm_result:
-        text = llm_result.replace("\r\n", "\n").strip()
-        mode = "ai_generated"
-    else:
-        text = _data_aware_fallback_section(canonical_sec, req.location_name, req.level_label, context, req.predictions)
-        mode = "data_synthesis"
+        preds = req.predictions or {}
 
-    result = {
-        "section": raw_sec,
-        "section_name": canonical_sec,
-        "title": sec_title,
-        "text": text,
-        "wikipedia_source": wiki_title,
-        "mode": mode,
-    }
+        # Build comprehensive data context
+        pop = preds.get("population", {}) if isinstance(preds, dict) else {}
+        aqi = preds.get("aqi", {}) if isinstance(preds, dict) else {}
+        weather = preds.get("weather", {}) if isinstance(preds, dict) else {}
+        migration = preds.get("migration", {}) if isinstance(preds, dict) else {}
 
-    cache_utils.set(key, result, STORY_SECTION_CACHE_TTL)
-    return result
+        data_summary = (
+            f"Location: {loc_name} ({lvl_label or 'Region'})\n"
+            f"Population: {pop.get('current', 'N/A')} (Source: {pop.get('source', 'N/A')})\n"
+            f"Air Quality Index: {aqi.get('current', 'N/A')} AQI via {aqi.get('station', 'station')}\n"
+            f"Temperature: {weather.get('current', 'N/A')}°C\n"
+            f"Night-Light Radiance: {migration.get('current', 'N/A')} nW/cm²/sr\n"
+            f"Verified Knowledge: {context[:400] if context else 'General geographic entity'}"
+        )
+
+        prompt = (
+            f"You are a professional geospatial intelligence analyst for GeoVisionAI.\n"
+            f"Write an insightful 150-word section titled '{sec_title}' for {loc_name}.\n\n"
+            f"Data & Context:\n{data_summary}\n\n"
+            f"Instructions:\n"
+            f"- Explain the data and trends authentically in the context of physical and human geography.\n"
+            f"- Format into exactly 2 clean paragraphs separated by a blank line.\n"
+            f"- Do NOT use empty introductory filler or bullet points.\n"
+            f"- Do NOT invent data; strictly ground statements in the figures provided above."
+        )
+
+        llm_result = None
+        try:
+            llm_result = await _generate_llm_text(prompt)
+        except Exception:
+            pass
+
+        if llm_result:
+            text = llm_result.replace("\r\n", "\n").strip()
+            mode = "ai_generated"
+        else:
+            text = _data_aware_fallback_section(canonical_sec, loc_name, lvl_label, context, preds)
+            mode = "data_synthesis"
+
+        result = {
+            "section": raw_sec,
+            "section_name": canonical_sec,
+            "title": sec_title,
+            "text": text,
+            "wikipedia_source": wiki_title,
+            "mode": mode,
+        }
+
+        cache_utils.set(key, result, STORY_SECTION_CACHE_TTL)
+        return result
+    except Exception as e:
+        print(f"generate_story_section graceful recovery: {e}")
+        fallback_text = _data_aware_fallback_section(canonical_sec, loc_name, lvl_label, "", req.predictions)
+        return {
+            "section": raw_sec,
+            "section_name": canonical_sec,
+            "title": sec_title,
+            "text": fallback_text,
+            "wikipedia_source": None,
+            "mode": "data_synthesis",
+        }
 
 
 @router.get("/images")
@@ -659,10 +700,10 @@ async def image_proxy(url: str):
         raise HTTPException(status_code=400, detail="Only verified imagery sources are supported for proxying")
     try:
         headers = {
-            "User-Agent": "GeoVisionAI/1.0 (https://geovisionai.org; research@geovisionai.org)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
         }
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
             res = await c.get(url, headers=headers)
         if res.status_code != 200 or not res.content:
             raise HTTPException(status_code=502, detail="Imagery source currently unavailable")

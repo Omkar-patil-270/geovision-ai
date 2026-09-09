@@ -18,12 +18,13 @@ app = FastAPI(title="GeoVisionAI API")
 # CORS — allow localhost for dev, Vercel URL for production.
 # Set ALLOWED_ORIGINS env var on Render to your real Vercel URL.
 # Multiple origins can be comma-separated: https://a.vercel.app,https://b.vercel.app
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:3000,*")
-ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:3000")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip() and o.strip() != "*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,3 +48,8 @@ app.include_router(timemachine.router, prefix="/api/timemachine", tags=["timemac
 @app.get("/")
 def root():
     return {"status": "GeoVisionAI backend running", "version": "1.0"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)

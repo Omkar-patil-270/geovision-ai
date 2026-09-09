@@ -66,6 +66,7 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
   const markerRef = useRef(null);
+  const hierarchyEntitiesRef = useRef([]);
   const boundaryEntityRef = useRef(null);
   const boundaryMarkerRef = useRef(null);
   const pulseHandlerRef = useRef(null);
@@ -83,12 +84,6 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
   useEffect(() => { selectionEnabledRef.current = selectionEnabled; }, [selectionEnabled]);
   useEffect(() => { onLocationSelectRef.current = onLocationSelect; }, [onLocationSelect]);
 
-  const scheduleResume = () => {
-    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-    idleTimerRef.current = setTimeout(() => {
-      if (selectionEnabledRef.current) autoRotateRef.current = true;
-    }, IDLE_RESUME_MS);
-  };
 
   useEffect(() => {
     if (viewerRef.current) return;
@@ -182,6 +177,7 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
       );
       labelsLayer.alpha = 0.9;
       labelsLayer.show = false;
+      labelsLayer.imageryProvider.errorEvent?.addEventListener(() => {});
       labelsLayerRef.current = labelsLayer;
 
       viewer.camera.changed.addEventListener(() => {
@@ -207,18 +203,36 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
 
       viewer.clock.onTick.addEventListener(() => {
         if (!autoRotateRef.current) return;
-        viewer.scene.camera.rotate(Cesium.Cartesian3.UNIT_Z, -0.0006);
+        const carto = viewer.camera.positionCartographic;
+        // ONLY rotate when the Earth is in complete whole-globe space view (> 12 million meters)
+        if (!carto || carto.height < 12000000) {
+          autoRotateRef.current = false;
+          return;
+        }
+        viewer.scene.camera.rotate(Cesium.Cartesian3.UNIT_Z, -0.0005);
       });
 
-      const pauseAndScheduleResume = () => {
+      const pauseRotation = () => {
         autoRotateRef.current = false;
-        scheduleResume();
+        if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       };
-      viewer.screenSpaceEventHandler.setInputAction(pauseAndScheduleResume, Cesium.ScreenSpaceEventType.LEFT_DOWN);
-      viewer.screenSpaceEventHandler.setInputAction(pauseAndScheduleResume, Cesium.ScreenSpaceEventType.WHEEL);
+      viewer.screenSpaceEventHandler.setInputAction(pauseRotation, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+      viewer.screenSpaceEventHandler.setInputAction(pauseRotation, Cesium.ScreenSpaceEventType.RIGHT_DOWN);
+      viewer.screenSpaceEventHandler.setInputAction(pauseRotation, Cesium.ScreenSpaceEventType.MIDDLE_DOWN);
+      viewer.screenSpaceEventHandler.setInputAction(pauseRotation, Cesium.ScreenSpaceEventType.PINCH_START);
+      viewer.screenSpaceEventHandler.setInputAction(pauseRotation, Cesium.ScreenSpaceEventType.WHEEL);
 
       viewer.screenSpaceEventHandler.setInputAction((click) => {
         if (!selectionEnabledRef.current) return;
+        autoRotateRef.current = false;
+
+        // Check if user clicked directly on an administrative point (Nation, State, District marker)
+        const picked = viewer.scene.pick(click.position);
+        if (Cesium.defined(picked) && picked.id && picked.id.locationData) {
+          onLocationSelectRef.current(picked.id.locationData);
+          return;
+        }
+
         const cartesian = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
         if (cartesian) {
           const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
@@ -231,7 +245,7 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
 
       viewerRef.current = viewer;
       isReadyRef.current = true;
-      autoRotateRef.current = true;
+      autoRotateRef.current = false;
 
       if (pendingFlyRef.current) {
         const { lat, lon, height } = pendingFlyRef.current;
@@ -328,19 +342,22 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
     if (!viewer) return;
     clearBoundary();
 
-    if (geojson) {
+    if (geojson && (geojson.type === "Polygon" || geojson.type === "MultiPolygon" || geojson.type === "Feature" || geojson.type === "FeatureCollection")) {
       try {
         const dataSource = await Cesium.GeoJsonDataSource.load(geojson, {
           stroke: Cesium.Color.fromCssColorString(colorHex),
-          fill: Cesium.Color.fromCssColorString(colorHex).withAlpha(0.18),
+          fill: Cesium.Color.fromCssColorString(colorHex).withAlpha(0.22),
           strokeWidth: 3,
-          clampToGround: true,
+          clampToGround: false,
         });
         await viewer.dataSources.add(dataSource);
         boundaryEntityRef.current = dataSource;
+
+        // Automatically frame the entire administrative boundary polygon smoothly
+        viewer.zoomTo(dataSource, new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-80), 0));
         return;
-      } catch {
-        // fall through to point marker
+      } catch (err) {
+        console.warn("GeoJsonDataSource boundary render issue:", err);
       }
     }
 
@@ -348,15 +365,17 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
       const entity = viewer.entities.add({
         position: Cesium.Cartesian3.fromDegrees(point.lon, point.lat),
         ellipse: {
-          semiMinorAxis: 300, semiMajorAxis: 300, height: 0, outline: false,
-          material: Cesium.Color.fromCssColorString(colorHex).withAlpha(0.35),
+          semiMinorAxis: 18000, semiMajorAxis: 18000, height: 0, outline: true,
+          outlineColor: Cesium.Color.fromCssColorString(colorHex),
+          outlineWidth: 2,
+          material: Cesium.Color.fromCssColorString(colorHex).withAlpha(0.25),
         },
       });
       boundaryMarkerRef.current = entity;
       let t = 0;
       const handler = () => {
         t += 0.04;
-        const pulse = 0.2 + Math.sin(t) * 0.15;
+        const pulse = 0.2 + Math.sin(t) * 0.12;
         entity.ellipse.material = Cesium.Color.fromCssColorString(colorHex).withAlpha(Math.max(0.1, pulse));
       };
       viewer.clock.onTick.addEventListener(handler);
@@ -491,14 +510,78 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
     });
   };
 
+  const clearHierarchyPoints = () => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    hierarchyEntitiesRef.current.forEach((e) => {
+      try { viewer.entities.remove(e); } catch {}
+    });
+    hierarchyEntitiesRef.current = [];
+  };
+
+  const setHierarchyPoints = (hierarchy) => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    clearHierarchyPoints();
+    if (!hierarchy) return;
+
+    const items = [
+      hierarchy.nation,
+      hierarchy.state,
+      hierarchy.district,
+      hierarchy.taluka,
+    ].filter(Boolean);
+
+    items.forEach((item) => {
+      if (item.lat == null || item.lon == null) return;
+      const badge = item.badge || item.level_label || "POINT";
+      const color = badge === "NATION" ? Cesium.Color.fromCssColorString("#a855f7")
+        : badge === "STATE" ? Cesium.Color.fromCssColorString("#3b82f6")
+        : (badge === "DISTRICT" || badge === "COUNTY") ? Cesium.Color.fromCssColorString("#00d4ff")
+        : Cesium.Color.fromCssColorString("#10b981");
+
+      const entity = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(item.lon, item.lat, 50),
+        point: {
+          pixelSize: 11,
+          color: color,
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `[${badge}] ${item.name}`,
+          font: "12px sans-serif",
+          fillColor: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 10000000),
+        },
+      });
+      entity.locationData = item;
+      hierarchyEntitiesRef.current.push(entity);
+    });
+  };
+
   const flyHome = () => {
     const viewer = viewerRef.current;
     if (!viewer) return;
     if (markerRef.current) { viewer.entities.remove(markerRef.current); markerRef.current = null; }
     clearBoundary();
+    clearHierarchyPoints();
     removeHeatmap();
+    autoRotateRef.current = false;
     viewer.camera.flyHome(2);
-    autoRotateRef.current = true;
+    setTimeout(() => {
+      // ONLY start rotation when back out at whole earth space view
+      const carto = viewer.camera?.positionCartographic;
+      if (carto && carto.height > 9500000) {
+        autoRotateRef.current = true;
+      }
+    }, 2200);
   };
 
   const zoomIn = () => viewerRef.current?.camera.zoomIn(Math.max(viewerRef.current.camera.positionCartographic.height * 0.35, 100));
@@ -512,11 +595,24 @@ const Globe = forwardRef(({ onLocationSelect, selectionEnabled }, ref) => {
       orientation: { heading: 0, pitch: viewer.camera.pitch, roll: 0 },
     });
   };
-  const setAutoRotate = (enabled) => { autoRotateRef.current = enabled; };
+  const setAutoRotate = (enabled) => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    if (enabled) {
+      const carto = viewer.camera?.positionCartographic;
+      if (carto && carto.height < 9500000) {
+        flyHome();
+      } else {
+        autoRotateRef.current = true;
+      }
+    } else {
+      autoRotateRef.current = false;
+    }
+  };
 
   useImperativeHandle(ref, () => ({
     flyToLocation, setMapStyle, flyHome, zoomIn, zoomOut, resetNorth, setAutoRotate, highlightBoundary, recolorBoundary, clearBoundary,
-    setHeatmapLayer, setHeatmapOpacity, removeHeatmap, toggle3DTilt,
+    setHeatmapLayer, setHeatmapOpacity, removeHeatmap, toggle3DTilt, setHierarchyPoints, clearHierarchyPoints,
   }));
 
   if (webglError) {

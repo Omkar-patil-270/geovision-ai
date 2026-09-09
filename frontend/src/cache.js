@@ -19,7 +19,7 @@ function hasLocalStorage() {
 }
 
 const USE_LS = typeof window !== "undefined" && hasLocalStorage();
-const PREFIX = "geovisionai_cache_";
+const PREFIX = "geovisionai_v3_";
 
 export function cacheGet(key) {
   const fullKey = PREFIX + key;
